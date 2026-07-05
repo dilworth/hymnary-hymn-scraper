@@ -83,11 +83,14 @@ async function scrapeHymn(page, listUrl, hymnNumber) {
   ]);
   await passSecurityChallenge(page);
 
-  // Line 1: the hymn heading, e.g. "17. The Great Thanksgiving : Musical Setting A".
+  // Hymn heading, e.g. "17. The Great Thanksgiving : Musical Setting A".
   // Read from the page's `h2.hymntitle`, falling back to "<num>. <row Text>".
-  const hymnTitle =
+  const heading =
     (await page.locator('h2.hymntitle').first().textContent().catch(() => null))?.trim() ||
     (rowTitle ? `${hymnNumber}. ${rowTitle}` : `${hymnNumber}.`);
+  // Drop the leading "<number>. " from the heading to get the bare title.
+  const esc0 = String(hymnNumber).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const hymnTitle = heading.replace(new RegExp(`^${esc0}\\.\\s*`), '').trim();
 
   // Line 2: the hymnal display name, parsed from the page <title>
   // ("<Hymnal Name> <num>. <Title> | Hymnary.org").
@@ -113,8 +116,16 @@ async function scrapeHymn(page, listUrl, hymnNumber) {
   const fullText = (await textArea.innerText()).trim();
   if (!fullText) throw new Error('Full Text area was empty.');
 
-  // Prepend the hymn title (line 1) and "<Hymnal Name> #<number>" (line 2).
-  const content = `${hymnTitle}\n${hymnalName} #${hymnNumber}\n\n${fullText}\n`;
+  // Strip trailing punctuation from each line of the hymn text.
+  const cleanedText = fullText
+    .split('\n')
+    .map((line) => line.replace(/[.,;:!?]+\s*$/, '').trimEnd())
+    .join('\n');
+
+  // Header: a "Title" label, the bare title, then "<Hymnal Name> #<number>".
+  // Footer: a blank line followed by the word "Blank".
+  const content =
+    `Title\n${hymnTitle}\n${hymnalName} #${hymnNumber}\n\n${cleanedText}\n\nBlank\n`;
 
   const outFile = path.join(OUT_DIR, `${HYMNAL}-${hymnNumber}-full-text.txt`);
   fs.writeFileSync(outFile, content, 'utf8');
