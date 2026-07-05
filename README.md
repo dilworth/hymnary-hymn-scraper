@@ -30,6 +30,9 @@ npm run scrape -- 17 UMH 0
 
 Each hymn is written to its own `<HYMNAL>-<#>-full-text.txt` file.
 
+Every run also writes a timestamped log of its console output to the output
+folder, e.g. `Hymns/scrape-log-2026-07-05_21-48-57.log`.
+
 ### Note on the security challenge
 
 hymnary.org sits behind a bunny.net browser-security challenge that blocks

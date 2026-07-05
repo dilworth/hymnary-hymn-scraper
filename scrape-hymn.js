@@ -73,15 +73,24 @@ async function scrapeHymn(page, listUrl, hymnNumber) {
 
   // 3) Click the link in the "#" column that matches the requested number.
   const rowLink = await table.$(`a[href$="/hymn/${HYMNAL}/${hymnNumber}"]`);
-  if (!rowLink) throw new Error(`Could not find hymn #${hymnNumber} in the table.`);
+  if (!rowLink) {
+    // Hymn number isn't listed in the table (nothing to open) — skip it.
+    return { skipped: true, reason: 'not listed in the table' };
+  }
   // Fallback title straight from the listing row's "Text" column.
   const rowTitle = (await rowLink.evaluate((a) => a.closest('tr').querySelectorAll('td')[1]?.textContent.trim() || '')) || '';
   console.log(`Clicking hymn #${hymnNumber}`);
-  await Promise.all([
+  const [navResponse] = await Promise.all([
     page.waitForNavigation({ waitUntil: 'domcontentloaded' }),
     rowLink.click(),
   ]);
   await passSecurityChallenge(page);
+
+  // Skip if the hymn page doesn't exist (e.g. HTTP 403/404 "Page Not Found").
+  const status = navResponse ? navResponse.status() : 200;
+  if (status >= 400 || /page not found/i.test(await page.title())) {
+    return { skipped: true, reason: `page not found (HTTP ${status})` };
+  }
 
   // Hymn heading, e.g. "17. The Great Thanksgiving : Musical Setting A".
   // Read from the page's `h2.hymntitle`, falling back to "<num>. <row Text>".
@@ -130,10 +139,38 @@ async function scrapeHymn(page, listUrl, hymnNumber) {
   const outFile = path.join(OUT_DIR, `${HYMNAL}-${hymnNumber}-full-text.txt`);
   fs.writeFileSync(outFile, content, 'utf8');
   console.log(`Saved Full Text to: ${outFile}`);
-  return content;
+  return { skipped: false, content };
+}
+
+// Tee console output to a timestamped log file inside the output folder.
+let logStream = null;
+function startLogging() {
+  fs.mkdirSync(OUT_DIR, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-').replace('T', '_').slice(0, 19);
+  const logFile = path.join(OUT_DIR, `scrape-log-${stamp}.log`);
+  logStream = fs.createWriteStream(logFile, { flags: 'a' });
+  const write = (fn) => (...args) => {
+    logStream.write(args.map((a) => (typeof a === 'string' ? a : String(a))).join(' ') + '\n');
+    fn(...args);
+  };
+  console.log = write(console.log.bind(console));
+  console.error = write(console.error.bind(console));
+  return logFile;
+}
+
+// Flush the log stream, then exit with the given code.
+function finish(code) {
+  if (logStream) {
+    logStream.end(() => process.exit(code));
+  } else {
+    process.exit(code);
+  }
 }
 
 (async () => {
+  const logFile = startLogging();
+  console.log(`Run started: ${new Date().toISOString()}`);
+  console.log(`Logging to: ${logFile}`);
   const hymnNumbers = parseHymnNumbers(HYMN_ARG);
   const listUrl = `https://hymnary.org/hymnal/${HYMNAL}?page=${PAGE}`;
   const browser = await chromium.connectOverCDP(CDP_URL);
@@ -141,13 +178,19 @@ async function scrapeHymn(page, listUrl, hymnNumber) {
   const page = await context.newPage();
 
   const failures = [];
+  const skipped = [];
   try {
     for (const hymnNumber of hymnNumbers) {
       console.log(`\n=== Hymn #${hymnNumber} (${listUrl}) ===`);
       try {
-        const text = await scrapeHymn(page, listUrl, hymnNumber);
+        const result = await scrapeHymn(page, listUrl, hymnNumber);
+        if (result.skipped) {
+          console.log(`Skipping hymn #${hymnNumber}: ${result.reason} — no file created.`);
+          skipped.push(hymnNumber);
+          continue;
+        }
         console.log('----- captured text -----');
-        console.log(text);
+        console.log(result.content);
         console.log('-------------------------');
       } catch (e) {
         console.error(`Failed on hymn #${hymnNumber}: ${e.message}`);
@@ -159,11 +202,12 @@ async function scrapeHymn(page, listUrl, hymnNumber) {
     await browser.close();
   }
 
-  if (failures.length) {
-    console.error(`\nFinished with failures for: ${failures.join(', ')}`);
-    process.exit(1);
+  if (skipped.length) {
+    console.log(`\nSkipped (not found): ${skipped.join(', ')}`);
   }
+  console.log(`Run finished: ${new Date().toISOString()}`);
+  finish(failures.length ? 1 : 0);
 })().catch((e) => {
   console.error('ERROR:', e.message);
-  process.exit(1);
+  finish(1);
 });
