@@ -73,15 +73,24 @@ async function scrapeHymn(page, listUrl, hymnNumber) {
 
   // 3) Click the link in the "#" column that matches the requested number.
   const rowLink = await table.$(`a[href$="/hymn/${HYMNAL}/${hymnNumber}"]`);
-  if (!rowLink) throw new Error(`Could not find hymn #${hymnNumber} in the table.`);
+  if (!rowLink) {
+    // Hymn number isn't listed in the table (nothing to open) — skip it.
+    return { skipped: true, reason: 'not listed in the table' };
+  }
   // Fallback title straight from the listing row's "Text" column.
   const rowTitle = (await rowLink.evaluate((a) => a.closest('tr').querySelectorAll('td')[1]?.textContent.trim() || '')) || '';
   console.log(`Clicking hymn #${hymnNumber}`);
-  await Promise.all([
+  const [navResponse] = await Promise.all([
     page.waitForNavigation({ waitUntil: 'domcontentloaded' }),
     rowLink.click(),
   ]);
   await passSecurityChallenge(page);
+
+  // Skip if the hymn page doesn't exist (e.g. HTTP 403/404 "Page Not Found").
+  const status = navResponse ? navResponse.status() : 200;
+  if (status >= 400 || /page not found/i.test(await page.title())) {
+    return { skipped: true, reason: `page not found (HTTP ${status})` };
+  }
 
   // Hymn heading, e.g. "17. The Great Thanksgiving : Musical Setting A".
   // Read from the page's `h2.hymntitle`, falling back to "<num>. <row Text>".
@@ -130,7 +139,7 @@ async function scrapeHymn(page, listUrl, hymnNumber) {
   const outFile = path.join(OUT_DIR, `${HYMNAL}-${hymnNumber}-full-text.txt`);
   fs.writeFileSync(outFile, content, 'utf8');
   console.log(`Saved Full Text to: ${outFile}`);
-  return content;
+  return { skipped: false, content };
 }
 
 (async () => {
@@ -141,13 +150,19 @@ async function scrapeHymn(page, listUrl, hymnNumber) {
   const page = await context.newPage();
 
   const failures = [];
+  const skipped = [];
   try {
     for (const hymnNumber of hymnNumbers) {
       console.log(`\n=== Hymn #${hymnNumber} (${listUrl}) ===`);
       try {
-        const text = await scrapeHymn(page, listUrl, hymnNumber);
+        const result = await scrapeHymn(page, listUrl, hymnNumber);
+        if (result.skipped) {
+          console.log(`Skipping hymn #${hymnNumber}: ${result.reason} — no file created.`);
+          skipped.push(hymnNumber);
+          continue;
+        }
         console.log('----- captured text -----');
-        console.log(text);
+        console.log(result.content);
         console.log('-------------------------');
       } catch (e) {
         console.error(`Failed on hymn #${hymnNumber}: ${e.message}`);
@@ -159,6 +174,9 @@ async function scrapeHymn(page, listUrl, hymnNumber) {
     await browser.close();
   }
 
+  if (skipped.length) {
+    console.log(`\nSkipped (not found): ${skipped.join(', ')}`);
+  }
   if (failures.length) {
     console.error(`\nFinished with failures for: ${failures.join(', ')}`);
     process.exit(1);
