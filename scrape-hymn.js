@@ -13,6 +13,8 @@
  * Usage:
  *   node scrape-hymn.js [number] [hymnal] [page]
  *   node scrape-hymn.js 17 UMH 0        # default
+ *   node scrape-hymn.js 17-20 UMH 0     # a range of hymns
+ *   node scrape-hymn.js 1,5,17 UMH 0    # a comma-separated list
  *
  * The script attaches to the already-running Chrome via CDP so it can pass
  * the site's browser-security challenge. Set CDP_URL to override the endpoint.
@@ -21,11 +23,27 @@ const fs = require('fs');
 const path = require('path');
 const { chromium } = require('playwright');
 
-const HYMN_NUMBER = process.argv[2] || '17';
+const HYMN_ARG = process.argv[2] || '17';
 const HYMNAL = process.argv[3] || 'UMH';
 const PAGE = process.argv[4] || '0';
 const CDP_URL = process.env.CDP_URL || 'http://localhost:29229';
 const OUT_DIR = process.env.OUT_DIR || process.cwd();
+
+// Parse "17", "17-20" (range) or "1,5,17" (list) into a list of hymn numbers.
+function parseHymnNumbers(arg) {
+  const out = [];
+  for (const part of arg.split(',').map((s) => s.trim()).filter(Boolean)) {
+    const range = part.match(/^(\d+)-(\d+)$/);
+    if (range) {
+      const start = parseInt(range[1], 10);
+      const end = parseInt(range[2], 10);
+      for (let n = start; n <= end; n++) out.push(String(n));
+    } else {
+      out.push(part);
+    }
+  }
+  return out;
+}
 
 async function passSecurityChallenge(page) {
   for (let i = 0; i < 30; i++) {
@@ -36,66 +54,85 @@ async function passSecurityChallenge(page) {
   throw new Error('Timed out waiting for the security challenge to clear.');
 }
 
+// Perform the full flow for a single hymn number, starting from the listing page.
+async function scrapeHymn(page, listUrl, hymnNumber) {
+  // 1) Open the hymnal listing page.
+  await page.goto(listUrl, { waitUntil: 'domcontentloaded' });
+  await passSecurityChallenge(page);
+
+  // 2) Find the table whose headers are #, Text, Tune.
+  const tableHandle = await page.evaluateHandle(() => {
+    const tables = Array.from(document.querySelectorAll('table'));
+    return tables.find((t) => {
+      const hdr = Array.from(t.querySelectorAll('th')).map((th) => th.textContent.trim().toLowerCase());
+      return hdr.includes('#') && hdr.includes('text') && hdr.includes('tune');
+    }) || null;
+  });
+  const table = tableHandle.asElement();
+  if (!table) throw new Error('Could not find the #/Text/Tune table on the listing page.');
+
+  // 3) Click the link in the "#" column that matches the requested number.
+  const rowLink = await table.$(`a[href$="/hymn/${HYMNAL}/${hymnNumber}"]`);
+  if (!rowLink) throw new Error(`Could not find hymn #${hymnNumber} in the table.`);
+  console.log(`Clicking hymn #${hymnNumber}`);
+  await Promise.all([
+    page.waitForNavigation({ waitUntil: 'domcontentloaded' }),
+    rowLink.click(),
+  ]);
+  await passSecurityChallenge(page);
+
+  // 4) Open the "Full Text" tab.
+  const fullTextTab = page.locator('a:has-text("Full Text")').first();
+  await fullTextTab.waitFor({ state: 'visible', timeout: 15000 });
+  console.log('Opening the Full Text tab');
+  await fullTextTab.click();
+
+  // 5) Capture the text within the Full Text area.
+  const textArea = page.locator('#text');
+  await textArea.waitFor({ state: 'visible', timeout: 15000 });
+  await page.waitForFunction(() => {
+    const el = document.querySelector('#text');
+    return el && el.innerText.trim().length > 0;
+  }, { timeout: 15000 });
+
+  const fullText = (await textArea.innerText()).trim();
+  if (!fullText) throw new Error('Full Text area was empty.');
+
+  const outFile = path.join(OUT_DIR, `${HYMNAL}-${hymnNumber}-full-text.txt`);
+  fs.writeFileSync(outFile, fullText + '\n', 'utf8');
+  console.log(`Saved Full Text to: ${outFile}`);
+  return fullText;
+}
+
 (async () => {
+  const hymnNumbers = parseHymnNumbers(HYMN_ARG);
+  const listUrl = `https://hymnary.org/hymnal/${HYMNAL}?page=${PAGE}`;
   const browser = await chromium.connectOverCDP(CDP_URL);
   const context = browser.contexts()[0] || (await browser.newContext());
   const page = await context.newPage();
 
+  const failures = [];
   try {
-    // 1) Open the hymnal listing page.
-    const listUrl = `https://hymnary.org/hymnal/${HYMNAL}?page=${PAGE}`;
-    console.log(`Opening ${listUrl}`);
-    await page.goto(listUrl, { waitUntil: 'domcontentloaded' });
-    await passSecurityChallenge(page);
-
-    // 2) Find the table whose headers are #, Text, Tune.
-    const tableHandle = await page.evaluateHandle(() => {
-      const tables = Array.from(document.querySelectorAll('table'));
-      return tables.find((t) => {
-        const hdr = Array.from(t.querySelectorAll('th')).map((th) => th.textContent.trim().toLowerCase());
-        return hdr.includes('#') && hdr.includes('text') && hdr.includes('tune');
-      }) || null;
-    });
-    const table = tableHandle.asElement();
-    if (!table) throw new Error('Could not find the #/Text/Tune table on the listing page.');
-
-    // 3) Click the link in the "#" column that matches the requested number.
-    const rowLink = await table.$(`a[href$="/hymn/${HYMNAL}/${HYMN_NUMBER}"]`);
-    if (!rowLink) throw new Error(`Could not find hymn #${HYMN_NUMBER} in the table.`);
-    console.log(`Clicking hymn #${HYMN_NUMBER}`);
-    await Promise.all([
-      page.waitForNavigation({ waitUntil: 'domcontentloaded' }),
-      rowLink.click(),
-    ]);
-    await passSecurityChallenge(page);
-
-    // 4) Open the "Full Text" tab.
-    const fullTextTab = page.locator('a:has-text("Full Text")').first();
-    await fullTextTab.waitFor({ state: 'visible', timeout: 15000 });
-    console.log('Opening the Full Text tab');
-    await fullTextTab.click();
-
-    // 5) Capture the text within the Full Text area.
-    const textArea = page.locator('#text');
-    await textArea.waitFor({ state: 'visible', timeout: 15000 });
-    // Wait for content to populate.
-    await page.waitForFunction(() => {
-      const el = document.querySelector('#text');
-      return el && el.innerText.trim().length > 0;
-    }, { timeout: 15000 });
-
-    const fullText = (await textArea.innerText()).trim();
-    if (!fullText) throw new Error('Full Text area was empty.');
-
-    const outFile = path.join(OUT_DIR, `${HYMNAL}-${HYMN_NUMBER}-full-text.txt`);
-    fs.writeFileSync(outFile, fullText + '\n', 'utf8');
-    console.log(`\nSaved Full Text to: ${outFile}\n`);
-    console.log('----- captured text -----');
-    console.log(fullText);
-    console.log('-------------------------');
+    for (const hymnNumber of hymnNumbers) {
+      console.log(`\n=== Hymn #${hymnNumber} (${listUrl}) ===`);
+      try {
+        const text = await scrapeHymn(page, listUrl, hymnNumber);
+        console.log('----- captured text -----');
+        console.log(text);
+        console.log('-------------------------');
+      } catch (e) {
+        console.error(`Failed on hymn #${hymnNumber}: ${e.message}`);
+        failures.push(hymnNumber);
+      }
+    }
   } finally {
     await page.close();
     await browser.close();
+  }
+
+  if (failures.length) {
+    console.error(`\nFinished with failures for: ${failures.join(', ')}`);
+    process.exit(1);
   }
 })().catch((e) => {
   console.error('ERROR:', e.message);

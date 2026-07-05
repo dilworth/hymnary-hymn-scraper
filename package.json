@@ -1,14 +1,14 @@
 {
-  "name": "hymnary-scraper",
+  "name": "hymnary-hymn-scraper",
   "version": "1.0.0",
-  "main": "index.js",
+  "main": "scrape-hymn.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "scrape": "node scrape-hymn.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "description": "",
+  "description": "Scrape a hymn's Full Text from hymnary.org",
   "dependencies": {
     "playwright": "^1.61.1"
   }

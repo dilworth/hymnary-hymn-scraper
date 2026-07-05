@@ -18,7 +18,17 @@ npm install
 node scrape-hymn.js [number] [hymnal] [page]
 # example (defaults):
 node scrape-hymn.js 17 UMH 0
+
+# a range of hymns:
+node scrape-hymn.js 17-20 UMH 0
+# a comma-separated list:
+node scrape-hymn.js 1,5,17 UMH 0
+
+# or via npm:
+npm run scrape -- 17 UMH 0
 ```
+
+Each hymn is written to its own `<HYMNAL>-<#>-full-text.txt` file.
 
 ### Note on the security challenge
 
