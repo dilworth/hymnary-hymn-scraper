@@ -142,7 +142,35 @@ async function scrapeHymn(page, listUrl, hymnNumber) {
   return { skipped: false, content };
 }
 
+// Tee console output to a timestamped log file inside the output folder.
+let logStream = null;
+function startLogging() {
+  fs.mkdirSync(OUT_DIR, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-').replace('T', '_').slice(0, 19);
+  const logFile = path.join(OUT_DIR, `scrape-log-${stamp}.log`);
+  logStream = fs.createWriteStream(logFile, { flags: 'a' });
+  const write = (fn) => (...args) => {
+    logStream.write(args.map((a) => (typeof a === 'string' ? a : String(a))).join(' ') + '\n');
+    fn(...args);
+  };
+  console.log = write(console.log.bind(console));
+  console.error = write(console.error.bind(console));
+  return logFile;
+}
+
+// Flush the log stream, then exit with the given code.
+function finish(code) {
+  if (logStream) {
+    logStream.end(() => process.exit(code));
+  } else {
+    process.exit(code);
+  }
+}
+
 (async () => {
+  const logFile = startLogging();
+  console.log(`Run started: ${new Date().toISOString()}`);
+  console.log(`Logging to: ${logFile}`);
   const hymnNumbers = parseHymnNumbers(HYMN_ARG);
   const listUrl = `https://hymnary.org/hymnal/${HYMNAL}?page=${PAGE}`;
   const browser = await chromium.connectOverCDP(CDP_URL);
@@ -177,11 +205,9 @@ async function scrapeHymn(page, listUrl, hymnNumber) {
   if (skipped.length) {
     console.log(`\nSkipped (not found): ${skipped.join(', ')}`);
   }
-  if (failures.length) {
-    console.error(`\nFinished with failures for: ${failures.join(', ')}`);
-    process.exit(1);
-  }
+  console.log(`Run finished: ${new Date().toISOString()}`);
+  finish(failures.length ? 1 : 0);
 })().catch((e) => {
   console.error('ERROR:', e.message);
-  process.exit(1);
+  finish(1);
 });

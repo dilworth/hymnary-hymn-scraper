@@ -1,3 +1,5 @@
 node_modules/
 *-full-text.txt
 !Hymns/**
+# Run logs are generated on each run; don't track them.
+scrape-log-*.log
