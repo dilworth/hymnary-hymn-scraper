@@ -74,12 +74,22 @@ async function scrapeHymn(page, listUrl, hymnNumber) {
   // 3) Click the link in the "#" column that matches the requested number.
   const rowLink = await table.$(`a[href$="/hymn/${HYMNAL}/${hymnNumber}"]`);
   if (!rowLink) throw new Error(`Could not find hymn #${hymnNumber} in the table.`);
+  // Fallback title straight from the listing row's "Text" column.
+  const rowTitle = (await rowLink.evaluate((a) => a.closest('tr').querySelectorAll('td')[1]?.textContent.trim() || '')) || '';
   console.log(`Clicking hymn #${hymnNumber}`);
   await Promise.all([
     page.waitForNavigation({ waitUntil: 'domcontentloaded' }),
     rowLink.click(),
   ]);
   await passSecurityChallenge(page);
+
+  // Derive the hymn title and the hymnal display name from the page title,
+  // e.g. "The United Methodist Hymnal 17. Holy, holy... | Hymnary.org".
+  const pageTitle = (await page.title()).replace(/\s*\|\s*Hymnary\.org\s*$/i, '').trim();
+  const esc = String(hymnNumber).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const m = pageTitle.match(new RegExp(`^(.*?)\\s+${esc}\\.\\s+(.*)$`));
+  const hymnalName = m ? m[1].trim() : HYMNAL;
+  const hymnTitle = (m ? m[2].trim() : '') || rowTitle;
 
   // 4) Open the "Full Text" tab.
   const fullTextTab = page.locator('a:has-text("Full Text")').first();
@@ -98,10 +108,13 @@ async function scrapeHymn(page, listUrl, hymnNumber) {
   const fullText = (await textArea.innerText()).trim();
   if (!fullText) throw new Error('Full Text area was empty.');
 
+  // Prepend the hymn title (line 1) and "<Hymnal Name> #<number>" (line 2).
+  const content = `${hymnTitle}\n${hymnalName} #${hymnNumber}\n\n${fullText}\n`;
+
   const outFile = path.join(OUT_DIR, `${HYMNAL}-${hymnNumber}-full-text.txt`);
-  fs.writeFileSync(outFile, fullText + '\n', 'utf8');
+  fs.writeFileSync(outFile, content, 'utf8');
   console.log(`Saved Full Text to: ${outFile}`);
-  return fullText;
+  return content;
 }
 
 (async () => {
