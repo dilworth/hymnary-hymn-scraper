@@ -83,13 +83,18 @@ async function scrapeHymn(page, listUrl, hymnNumber) {
   ]);
   await passSecurityChallenge(page);
 
-  // Derive the hymn title and the hymnal display name from the page title,
-  // e.g. "The United Methodist Hymnal 17. Holy, holy... | Hymnary.org".
+  // Line 1: the hymn heading, e.g. "17. The Great Thanksgiving : Musical Setting A".
+  // Read from the page's `h2.hymntitle`, falling back to "<num>. <row Text>".
+  const hymnTitle =
+    (await page.locator('h2.hymntitle').first().textContent().catch(() => null))?.trim() ||
+    (rowTitle ? `${hymnNumber}. ${rowTitle}` : `${hymnNumber}.`);
+
+  // Line 2: the hymnal display name, parsed from the page <title>
+  // ("<Hymnal Name> <num>. <Title> | Hymnary.org").
   const pageTitle = (await page.title()).replace(/\s*\|\s*Hymnary\.org\s*$/i, '').trim();
   const esc = String(hymnNumber).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const m = pageTitle.match(new RegExp(`^(.*?)\\s+${esc}\\.\\s+(.*)$`));
-  const hymnalName = m ? m[1].trim() : HYMNAL;
-  const hymnTitle = (m ? m[2].trim() : '') || rowTitle;
+  const nameMatch = pageTitle.match(new RegExp(`^(.*?)\\s+${esc}\\.\\s`));
+  const hymnalName = nameMatch ? nameMatch[1].trim() : HYMNAL;
 
   // 4) Open the "Full Text" tab.
   const fullTextTab = page.locator('a:has-text("Full Text")').first();
