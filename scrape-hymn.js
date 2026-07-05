@@ -64,32 +64,42 @@ function parseHymnNumbers(arg) {
   return out;
 }
 
-// Insert a section heading before each block of text (a "block" is a run of
-// non-blank lines). A block whose first line starts with a number becomes
-// "Verse <number>" (with that leading number stripped); otherwise "Chorus".
-// Blank lines are preserved as-is.
-function addSectionHeadings(text) {
+// Format the hymn body: for each block of text (a "block" is a run of non-blank
+// lines separated by blank lines) add a heading — "Verse <number>" if the first
+// line starts with a number (that number is stripped), otherwise "Chorus" — and
+// insert a blank line after every two lines of text within the block. Existing
+// blank lines between blocks are preserved as-is.
+function formatHymnBody(text) {
+  const lines = text.split('\n');
   const out = [];
-  let atBlockStart = true;
-  for (const line of text.split('\n')) {
-    if (line.trim() === '') {
-      out.push(line);
-      atBlockStart = true;
+  let i = 0;
+  while (i < lines.length) {
+    if (lines[i].trim() === '') {
+      out.push(lines[i]);
+      i++;
       continue;
     }
-    if (atBlockStart) {
-      const m = line.match(/^(\d+)[.)]?\s*/);
-      if (m) {
-        out.push(`Verse ${m[1]}`);
-        const rest = line.slice(m[0].length);
-        if (rest.trim() !== '') out.push(rest);
-      } else {
-        out.push('Chorus');
-        out.push(line);
-      }
-      atBlockStart = false;
+    // Collect the current block of consecutive non-blank lines.
+    const block = [];
+    while (i < lines.length && lines[i].trim() !== '') {
+      block.push(lines[i]);
+      i++;
+    }
+    // Heading + the block's text lines (with any leading verse number removed).
+    const m = block[0].match(/^(\d+)[.)]?\s*/);
+    let textLines;
+    if (m) {
+      out.push(`Verse ${m[1]}`);
+      const rest = block[0].slice(m[0].length);
+      textLines = (rest.trim() !== '' ? [rest] : []).concat(block.slice(1));
     } else {
-      out.push(line);
+      out.push('Chorus');
+      textLines = block.slice();
+    }
+    // Emit text lines, inserting a blank line after every two.
+    for (let k = 0; k < textLines.length; k++) {
+      out.push(textLines[k]);
+      if ((k + 1) % 2 === 0 && k + 1 < textLines.length) out.push('');
     }
   }
   return out.join('\n');
@@ -202,7 +212,7 @@ async function captureCurrentHymn(page, hymnNumber, rowTitle = '') {
     .split('\n')
     .map((line) => line.replace(/[.,;:!?]+\s*$/, '').trimEnd())
     .join('\n');
-  const bodyText = addSectionHeadings(cleanedText);
+  const bodyText = formatHymnBody(cleanedText);
 
   const content =
     `Title\n${hymnTitle}\n${hymnalName} #${hymnNumber}\n\n${bodyText}\n\nBlank\n`;
