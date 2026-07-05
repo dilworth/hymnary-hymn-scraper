@@ -45,6 +45,37 @@ function parseHymnNumbers(arg) {
   return out;
 }
 
+// Insert a section heading before each block of text (a "block" is a run of
+// non-blank lines). A block whose first line starts with a number becomes
+// "Verse <number>" (with that leading number stripped); otherwise "Chorus".
+// Blank lines are preserved as-is.
+function addSectionHeadings(text) {
+  const out = [];
+  let atBlockStart = true;
+  for (const line of text.split('\n')) {
+    if (line.trim() === '') {
+      out.push(line);
+      atBlockStart = true;
+      continue;
+    }
+    if (atBlockStart) {
+      const m = line.match(/^(\d+)[.)]?\s*/);
+      if (m) {
+        out.push(`Verse ${m[1]}`);
+        const rest = line.slice(m[0].length);
+        if (rest.trim() !== '') out.push(rest);
+      } else {
+        out.push('Chorus');
+        out.push(line);
+      }
+      atBlockStart = false;
+    } else {
+      out.push(line);
+    }
+  }
+  return out.join('\n');
+}
+
 async function passSecurityChallenge(page) {
   for (let i = 0; i < 30; i++) {
     const title = await page.title();
@@ -131,10 +162,13 @@ async function scrapeHymn(page, listUrl, hymnNumber) {
     .map((line) => line.replace(/[.,;:!?]+\s*$/, '').trimEnd())
     .join('\n');
 
+  // Insert "Verse <n>" / "Chorus" headings before each block of text.
+  const bodyText = addSectionHeadings(cleanedText);
+
   // Header: a "Title" label, the bare title, then "<Hymnal Name> #<number>".
   // Footer: a blank line followed by the word "Blank".
   const content =
-    `Title\n${hymnTitle}\n${hymnalName} #${hymnNumber}\n\n${cleanedText}\n\nBlank\n`;
+    `Title\n${hymnTitle}\n${hymnalName} #${hymnNumber}\n\n${bodyText}\n\nBlank\n`;
 
   const outFile = path.join(OUT_DIR, `${HYMNAL}-${hymnNumber}-full-text.txt`);
   fs.writeFileSync(outFile, content, 'utf8');
