@@ -74,12 +74,30 @@ async function scrapeHymn(page, listUrl, hymnNumber) {
   // 3) Click the link in the "#" column that matches the requested number.
   const rowLink = await table.$(`a[href$="/hymn/${HYMNAL}/${hymnNumber}"]`);
   if (!rowLink) throw new Error(`Could not find hymn #${hymnNumber} in the table.`);
+  // Fallback title straight from the listing row's "Text" column.
+  const rowTitle = (await rowLink.evaluate((a) => a.closest('tr').querySelectorAll('td')[1]?.textContent.trim() || '')) || '';
   console.log(`Clicking hymn #${hymnNumber}`);
   await Promise.all([
     page.waitForNavigation({ waitUntil: 'domcontentloaded' }),
     rowLink.click(),
   ]);
   await passSecurityChallenge(page);
+
+  // Hymn heading, e.g. "17. The Great Thanksgiving : Musical Setting A".
+  // Read from the page's `h2.hymntitle`, falling back to "<num>. <row Text>".
+  const heading =
+    (await page.locator('h2.hymntitle').first().textContent().catch(() => null))?.trim() ||
+    (rowTitle ? `${hymnNumber}. ${rowTitle}` : `${hymnNumber}.`);
+  // Drop the leading "<number>. " from the heading to get the bare title.
+  const esc0 = String(hymnNumber).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const hymnTitle = heading.replace(new RegExp(`^${esc0}\\.\\s*`), '').trim();
+
+  // Line 2: the hymnal display name, parsed from the page <title>
+  // ("<Hymnal Name> <num>. <Title> | Hymnary.org").
+  const pageTitle = (await page.title()).replace(/\s*\|\s*Hymnary\.org\s*$/i, '').trim();
+  const esc = String(hymnNumber).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const nameMatch = pageTitle.match(new RegExp(`^(.*?)\\s+${esc}\\.\\s`));
+  const hymnalName = nameMatch ? nameMatch[1].trim() : HYMNAL;
 
   // 4) Open the "Full Text" tab.
   const fullTextTab = page.locator('a:has-text("Full Text")').first();
@@ -98,10 +116,21 @@ async function scrapeHymn(page, listUrl, hymnNumber) {
   const fullText = (await textArea.innerText()).trim();
   if (!fullText) throw new Error('Full Text area was empty.');
 
+  // Strip trailing punctuation from each line of the hymn text.
+  const cleanedText = fullText
+    .split('\n')
+    .map((line) => line.replace(/[.,;:!?]+\s*$/, '').trimEnd())
+    .join('\n');
+
+  // Header: a "Title" label, the bare title, then "<Hymnal Name> #<number>".
+  // Footer: a blank line followed by the word "Blank".
+  const content =
+    `Title\n${hymnTitle}\n${hymnalName} #${hymnNumber}\n\n${cleanedText}\n\nBlank\n`;
+
   const outFile = path.join(OUT_DIR, `${HYMNAL}-${hymnNumber}-full-text.txt`);
-  fs.writeFileSync(outFile, fullText + '\n', 'utf8');
+  fs.writeFileSync(outFile, content, 'utf8');
   console.log(`Saved Full Text to: ${outFile}`);
-  return fullText;
+  return content;
 }
 
 (async () => {
