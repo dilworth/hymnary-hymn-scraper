@@ -43,7 +43,10 @@ const OUT_DIR = process.env.OUT_DIR || process.cwd();
 // Decide mode from the first CLI arg. A number/range/list => targeted mode;
 // otherwise treat it as the hymnal code (default "UMH") and crawl everything.
 const ARG1 = process.argv[2];
-const IS_TARGETED = !!ARG1 && /^[\d][\d,\-\s]*$/.test(ARG1);
+// Targeted when the first arg starts with a digit (e.g. "17", "17-20",
+// "1,5,17", or numbers with letter suffixes like "18b"). A hymnal code such as
+// "UMH" starts with a letter and therefore triggers crawl mode.
+const IS_TARGETED = !!ARG1 && /^\d[\w,\-\s]*$/.test(ARG1);
 const HYMNAL = IS_TARGETED ? (process.argv[3] || 'UMH') : (ARG1 || 'UMH');
 const HYMN_ARG = IS_TARGETED ? ARG1 : null;
 const PAGE = process.argv[4] || '0';
@@ -245,12 +248,14 @@ async function captureCurrentHymn(page, hymnNumber, rowTitle = '') {
     return { skipped: true, reason: 'license agreement not accepted' };
   }
 
-  // Strip trailing punctuation from each line.
+  // Drop the trailing licensing footer (e.g. "This media is licensed under the
+  // terms of Hope Publishing: one copy") and strip trailing punctuation.
   const cleanedText = fullText
     .split('\n')
+    .filter((line) => !/^\s*This media is licensed under/i.test(line))
     .map((line) => line.replace(/[.,;:!?]+\s*$/, '').trimEnd())
     .join('\n');
-  const bodyText = formatHymnBody(cleanedText);
+  const bodyText = formatHymnBody(cleanedText).replace(/\s+$/, '');
 
   const content =
     `Title\n${hymnTitle}\n${hymnalName} #${hymnNumber}\n\n${bodyText}\n\nBlank\n`;
@@ -282,7 +287,11 @@ async function scrapeHymnFromListing(page, listUrl, hymnNumber) {
   if (!table) throw new Error('Could not find the #/Text/Tune table on the listing page.');
 
   const rowLink = await table.$(`a[href$="/hymn/${HYMNAL}/${hymnNumber}"]`);
-  if (!rowLink) return { skipped: true, reason: 'not listed in the table' };
+  if (!rowLink) {
+    // Not on this listing page — go straight to the hymn's page instead.
+    console.log(`Hymn #${hymnNumber} not on this listing page; opening it directly.`);
+    return scrapeHymnByUrl(page, hymnNumber);
+  }
   const rowTitle = (await rowLink.evaluate((a) => a.closest('tr').querySelectorAll('td')[1]?.textContent.trim() || '')) || '';
   console.log(`Clicking hymn #${hymnNumber}`);
   const [navResponse] = await Promise.all([
@@ -352,20 +361,33 @@ function finish(code) {
       }
     }
 
+    const MAX_ATTEMPTS = 3;
     for (const { num, title } of worklist) {
       console.log(`\n=== Hymn #${num} ===`);
-      try {
-        const result = IS_TARGETED
-          ? await scrapeHymnFromListing(page, `https://hymnary.org/hymnal/${HYMNAL}?page=${PAGE}`, num)
-          : await scrapeHymnByUrl(page, num, title);
-        if (result.skipped) {
-          console.log(`Skipping hymn #${num}: ${result.reason} — no file created.`);
-          skipped.push(num);
-          continue;
+      let lastErr = null;
+      let done = false;
+      for (let attempt = 1; attempt <= MAX_ATTEMPTS && !done; attempt++) {
+        try {
+          const result = IS_TARGETED
+            ? await scrapeHymnFromListing(page, `https://hymnary.org/hymnal/${HYMNAL}?page=${PAGE}`, num)
+            : await scrapeHymnByUrl(page, num, title);
+          if (result.skipped) {
+            console.log(`Skipping hymn #${num}: ${result.reason} — no file created.`);
+            skipped.push(num);
+          } else {
+            saved.push(num);
+          }
+          done = true;
+        } catch (e) {
+          lastErr = e;
+          if (attempt < MAX_ATTEMPTS) {
+            console.error(`Attempt ${attempt} for hymn #${num} failed: ${e.message} — retrying...`);
+            await page.waitForTimeout(3000);
+          }
         }
-        saved.push(num);
-      } catch (e) {
-        console.error(`Failed on hymn #${num}: ${e.message}`);
+      }
+      if (!done) {
+        console.error(`Failed on hymn #${num} after ${MAX_ATTEMPTS} attempts: ${lastErr && lastErr.message}`);
         failures.push(num);
       }
     }
