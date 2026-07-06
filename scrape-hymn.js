@@ -105,6 +105,31 @@ function formatHymnBody(text) {
   return out.join('\n');
 }
 
+// If the Full Text area is gated behind an "I agree" button/link, click it so
+// the text is revealed before capturing. There can be several matches (some
+// hidden), so click the first visible one. Returns true if a button was clicked.
+async function clickIAgree(page) {
+  const agree = page.locator(
+    'input.submit-license, button:has-text("I agree"), a:has-text("I agree"), ' +
+      'input[value*="I agree" i]'
+  );
+  try {
+    const count = await agree.count();
+    for (let i = 0; i < count; i++) {
+      const el = agree.nth(i);
+      if (await el.isVisible().catch(() => false)) {
+        console.log('Clicking "I agree" before capturing text');
+        await el.click();
+        await page.waitForTimeout(1500);
+        return true;
+      }
+    }
+  } catch (e) {
+    // Ignore: the button may have disappeared or wasn't actionable.
+  }
+  return false;
+}
+
 async function passSecurityChallenge(page) {
   for (let i = 0; i < 30; i++) {
     const title = await page.title();
@@ -184,6 +209,9 @@ async function captureCurrentHymn(page, hymnNumber, rowTitle = '') {
   }
   await fullTextTab.click();
 
+  // Some texts are gated behind an "I agree" copyright button; click it first.
+  await clickIAgree(page);
+
   // Hymn heading, e.g. "17. The Great Thanksgiving : Musical Setting A".
   const heading =
     (await page.locator('h2.hymntitle').first().textContent().catch(() => null))?.trim() ||
@@ -196,16 +224,26 @@ async function captureCurrentHymn(page, hymnNumber, rowTitle = '') {
   const nameMatch = pageTitle.match(new RegExp(`^(.*?)\\s+${esc}\\.\\s`));
   const hymnalName = nameMatch ? nameMatch[1].trim() : HYMNAL;
 
-  // Capture the Full Text area.
+  // Capture the Full Text area. Wait for real content — i.e. non-empty and no
+  // longer showing the "please accept the license agreement" gate.
   const textArea = page.locator('#text');
   await textArea.waitFor({ state: 'visible', timeout: 15000 });
-  await page.waitForFunction(() => {
-    const el = document.querySelector('#text');
-    return el && el.innerText.trim().length > 0;
-  }, { timeout: 15000 });
+  try {
+    await page.waitForFunction(() => {
+      const el = document.querySelector('#text');
+      if (!el) return false;
+      const t = el.innerText.trim();
+      return t.length > 0 && !/please accept the license agreement/i.test(t);
+    }, { timeout: 15000 });
+  } catch (e) {
+    // Fall through; handled by the license-text check below.
+  }
 
   const fullText = (await textArea.innerText()).trim();
   if (!fullText) return { skipped: true, reason: 'Full Text area was empty' };
+  if (/please accept the license agreement/i.test(fullText)) {
+    return { skipped: true, reason: 'license agreement not accepted' };
+  }
 
   // Strip trailing punctuation from each line.
   const cleanedText = fullText
